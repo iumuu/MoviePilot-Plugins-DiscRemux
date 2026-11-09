@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import math
+import re
+import sys
 import os
 import shlex
 import signal
@@ -12,6 +14,7 @@ import threading
 import time
 from collections import Counter
 from pathlib import Path
+from .languages import language_args
 
 
 def format_progress(data, duration, elapsed):
@@ -116,6 +119,7 @@ class RemuxEngine:
         self.stage = '检查工具'
         self.duration = 0
         self.progress_file = None
+        self.selected_playlist = None
 
     def run(self, args: list[str]) -> str:
         """使用文件承接子进程输出，防止管道阻塞并支持中止。"""
@@ -160,6 +164,12 @@ class RemuxEngine:
                     diagnostic = details.decode('utf-8', 'replace').strip() or '子进程没有输出错误详情'
                     diagnostic = ' | '.join(diagnostic.splitlines())
                     raise RuntimeError(f'{Path(args[0]).name} {reason}; 命令: {command}; stderr: {diagnostic}')
+                if args[0] == self.ffprobe:
+                    err.seek(0)
+                    for line in err:
+                        match = re.search(rb'selected (\d{5})\.mpls', line)
+                        if match:
+                            self.selected_playlist = int(match.group(1))
                 out.seek(0)
                 return out.read().decode('utf-8', 'replace')
             finally:
@@ -189,11 +199,29 @@ class RemuxEngine:
         args = input_args(source, kind, selector)
         self.stage = '探测原盘轨道与时长'
         self.report(self.stage)
+        self.selected_playlist = None
         original = self.probe(args)
         self.duration = float(original.get('format', {}).get('duration') or 0)
         streams = [s for s in original.get('streams', []) if s.get('codec_type') in ('video', 'audio', 'subtitle')]
         if not any(s['codec_type'] == 'video' for s in streams):
             raise RuntimeError('未找到视频轨道')
+        languages = {}
+        if kind == 'bluray':
+            playlist = int(selector) if selector else self.selected_playlist
+            if playlist is not None:
+                args = input_args(source, kind, str(playlist))
+                try:
+                    self.stage = '读取蓝光轨道语言'
+                    raw = self.run([sys.executable, str(Path(__file__).with_name('languages.py')), str(source), str(playlist)])
+                    languages = {int(pid): lang for pid, lang in json.loads(raw).items()}
+                    self.report(f'播放列表 {playlist:05d}：读取到 {len(languages)} 条 PID 语言标签')
+                except Exception as exc:
+                    if self.cancel.is_set():
+                        raise
+                    self.report(f'警告：蓝光语言读取失败，无法确认的轨道将保留 und：{exc}')
+            else:
+                self.report('警告：未能确认播放列表，无法补全蓝光语言标签')
+        metadata, expected_languages = language_args(streams, languages)
         target.parent.mkdir(parents=True, exist_ok=True)
         lock = target.with_suffix(target.suffix + '.lock')
         fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -212,7 +240,7 @@ class RemuxEngine:
                 self.progress_file = Path(progress_dir) / 'progress.txt'
                 self.progress_file.touch()
                 try:
-                    self.run([self.ffmpeg, '-hide_banner', '-loglevel', 'info', '-nostats', '-progress', str(self.progress_file), '-stats_period', '1', '-nostdin', '-y', *args, *maps, '-map_metadata', '0', '-map_chapters', '0', '-c', 'copy', '-max_muxing_queue_size', '4096', '-f', 'matroska', str(temp)])
+                    self.run([self.ffmpeg, '-hide_banner', '-loglevel', 'info', '-nostats', '-progress', str(self.progress_file), '-stats_period', '1', '-nostdin', '-y', *args, *maps, '-map_metadata', '0', '-map_chapters', '0', *metadata, '-c', 'copy', '-max_muxing_queue_size', '4096', '-f', 'matroska', str(temp)])
                 finally:
                     self.progress_file = None
             self.stage = '校验输出（尚未完成）'
@@ -222,6 +250,9 @@ class RemuxEngine:
             actual_tracks = Counter((s['codec_type'], s['codec_name']) for s in actual.get('streams', []))
             if expected_tracks != actual_tracks:
                 raise RuntimeError('输出轨道数量或编码与原盘不一致')
+            for index, language in expected_languages.items():
+                if actual['streams'][index].get('tags', {}).get('language') != language:
+                    raise RuntimeError(f'输出轨道 {index} 语言标签校验失败')
             duration = float(original.get('format', {}).get('duration', 0))
             output_duration = float(actual.get('format', {}).get('duration', 0))
             if duration > 0 and abs(duration - output_duration) > max(3, duration * 0.001):

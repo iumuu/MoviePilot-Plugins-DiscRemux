@@ -7,8 +7,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-spec = importlib.util.spec_from_file_location('engine', Path(__file__).resolve().parents[1] / 'plugins.v3/discremux/engine.py')
+spec = importlib.util.spec_from_file_location('engine', Path(__file__).resolve().parents[1] / 'plugins.v3/discremux/engine.py', submodule_search_locations=[str(Path(__file__).resolve().parents[1] / 'plugins.v3/discremux')])
 engine = importlib.util.module_from_spec(spec)
+sys.modules['engine'] = engine
 spec.loader.exec_module(engine)
 
 
@@ -128,7 +129,22 @@ class EngineTests(unittest.TestCase):
 
     def test_metadata(self):
         manifest = json.loads((Path(__file__).resolve().parents[1] / 'package.v3.json').read_text(encoding='utf-8'))
-        self.assertEqual(manifest['DiscRemux']['version'], '1.3.0')
+        self.assertEqual(manifest['DiscRemux']['version'], '1.3.1')
+
+    def test_playlist_log_detection(self):
+        self.runner.ffprobe = sys.executable
+        self.runner.run([sys.executable, '-c', 'import sys; sys.stderr.write("[bluray] selected 00801.mpls")'])
+        self.assertEqual(self.runner.selected_playlist, 801)
+
+    def test_language_written_and_checked(self):
+        actual = json.loads(json.dumps(self.media))
+        self.media['streams'][1]['id'] = '0x1100'
+        actual['streams'][1]['tags'] = {'language': 'eng'}
+        with patch.object(self.runner, 'probe', side_effect=[self.media, actual]), patch.object(self.runner, 'run', return_value='{"4352": "eng"}') as run:
+            self.runner.remux(self.root, self.root / 'film.mkv', 'bluray', '801')
+            command = run.call_args.args[0]
+            self.assertIn('-metadata:s:1', command)
+            self.assertIn('language=eng', command)
 
     def test_clean_output_names(self):
         source = self.root / 'Film.2026.ISO'

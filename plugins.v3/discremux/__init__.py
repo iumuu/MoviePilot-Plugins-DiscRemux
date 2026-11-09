@@ -20,7 +20,7 @@ class DiscRemux(_PluginBase):
     plugin_name = '原盘无损提取'
     plugin_desc = '使用 FFmpeg 将蓝光/DVD 目录及 ISO 无损封装为 MKV。'
     plugin_icon = 'DVD.png'
-    plugin_version = '1.3.0'
+    plugin_version = '1.3.1'
     plugin_author = 'DiscRemux Contributors'
     author_url = ''
     plugin_config_prefix = 'discremux_'
