@@ -20,7 +20,7 @@ class DiscRemux(_PluginBase):
     plugin_name = '原盘无损提取'
     plugin_desc = '使用 FFmpeg 将蓝光/DVD 目录及 ISO 无损封装为 MKV。'
     plugin_icon = 'DVD.png'
-    plugin_version = '1.3.2'
+    plugin_version = '1.4.0'
     plugin_author = 'DiscRemux Contributors'
     author_url = ''
     plugin_config_prefix = 'discremux_'
@@ -38,6 +38,7 @@ class DiscRemux(_PluginBase):
         self._status = '等待任务'
         self._last_progress_log = 0
         self._progress_source = ''
+        self._pending = False
 
     def init_plugin(self, config=None):
         """应用配置，停止旧任务后注册一次性任务。"""
@@ -49,12 +50,11 @@ class DiscRemux(_PluginBase):
             self._stopping.clear()
         finally:
             self._lock.release()
-        if self._config.get('run_once') or self._config.get('redo_once'):
-            redo = bool(self._config.get('redo_once'))
+        self._config.pop('redo_once', None)
+        if self._config.get('run_once'):
             self._config['run_once'] = False
-            self._config['redo_once'] = False
             self.update_config(self._config)
-            if not add_plugin_once_job(self.__class__.__name__, 'scan', self.scan, self.plugin_name, delay_seconds=3, func_kwargs={'redo': redo}):
+            if not add_plugin_once_job(self.__class__.__name__, 'scan', self.scan, self.plugin_name, delay_seconds=3):
                 logger.error('原盘提取：调度器未就绪，请重新勾选运行一次')
 
     def get_state(self):
@@ -73,15 +73,14 @@ class DiscRemux(_PluginBase):
         return []
 
     def get_api(self):
-        """不公开文件操作 API。"""
-        return []
+        """提供登录鉴权的记录操作，不接受任意文件路径。"""
+        return [{'path': '/record_action', 'endpoint': self.record_action, 'methods': ['POST'], 'auth': 'bear', 'summary': '清除记录或单条重新提取'}]
 
     def get_form(self):
         """提供原生配置界面与默认值。"""
         defaults = dict(enabled=False, run_once=False, source='', output='', iso_kind='bluray', selector='', interval=60, ffmpeg='ffmpeg', ffprobe='ffprobe', timeout=12, prefer_system=True, auto_install=False)
         fields = []
-        defaults['redo_once'] = False
-        for key, label in [('enabled', '启用周期扫描'), ('run_once', '保存后立即运行一次'), ('redo_once', '重新提取一次（仅允许输入为单个 ISO 或原盘根目录；保留旧输出）')]:
+        for key, label in [('enabled', '启用周期扫描'), ('run_once', '保存后立即运行一次')]:
             fields.append({'component': 'VSwitch', 'props': {'model': key, 'label': label}})
         for key, label in [('prefer_system', '优先使用系统版 FFmpeg（/usr/bin，忽略下方自定义路径）'), ('auto_install', '缺失时自动安装系统版 FFmpeg（Debian/Ubuntu、root、需联网）')]:
             fields.append({'component': 'VSwitch', 'props': {'model': key, 'label': label}})
@@ -92,17 +91,95 @@ class DiscRemux(_PluginBase):
         fields.append({'component': 'VAlert', 'props': {'type': 'info', 'variant': 'tonal', 'text': '仅处理已完整下载、可读取的原盘。音视频字幕均使用 copy；不保留菜单，不转码，不删除源文件，不覆盖已有 MKV。蓝光需 libbluray，DVD 需 dvdvideo。多版本/剧集原盘请指定标题；混合 ISO 请分批配置。输出磁盘需支持硬链接。'}})
         return [{'component': 'VForm', 'content': fields}], defaults
 
-    def get_page(self):
-        """显示运行状态和最近处理记录。"""
-        records = self.get_data('history') or []
-        return [{'component': 'VAlert', 'props': {'type': 'info', 'text': self._status}}, {'component': 'VList', 'content': [{'component': 'VListItem', 'props': {'title': row['source'], 'subtitle': f"{row['time']} | {row['result']}"}} for row in reversed(records)]}]
+    @staticmethod
+    def _row_id(row):
+        """生成源路径和标题对应的稳定记录 ID。"""
+        selector = str(row.get('selector') or '').strip()
+        if selector.isdecimal():
+            selector = str(int(selector))
+        return hashlib.sha256(json.dumps([row.get('source'), selector], ensure_ascii=False).encode()).hexdigest()
 
-    def scan(self, redo=False):
+    def _completed_rows(self):
+        """读取全部持久成功记录，包括超出历史日志上限的记录。"""
+        return [(item.key, item.value) for item in (self.get_data() or []) if item.key.startswith('completed_')]
+
+    def _record_rows(self):
+        """按原盘及标题合并重复日志，加入持久成功记录。"""
+        rows = {}
+        for _, row in self._completed_rows():
+            rows[self._row_id(row)] = {**row, 'result': '完成（持久记录）'}
+        for row in self.get_data('history') or []:
+            rows[self._row_id(row)] = {**rows.get(self._row_id(row), {}), **row}
+        return rows
+
+    def get_page(self):
+        """在数据页顶部及每行右侧提供记录操作。"""
+        busy = self._lock.locked() or self._pending
+        def button(text, action, record_id=''):
+            """创建原生页面 POST 操作按钮。"""
+            return {'component': 'VBtn', 'text': text, 'props': {'size': 'small', 'variant': 'tonal', 'color': 'error' if action.startswith('clear') else 'primary', 'disabled': busy}, 'events': {'click': {'api': 'plugin/DiscRemux/record_action', 'method': 'POST', 'params': {'action': action, 'record_id': record_id}}}}
+        content = []
+        for record_id, row in sorted(self._record_rows().items(), key=lambda item: item[1].get('time') or '', reverse=True):
+            content.append({'component': 'VRow', 'props': {'align': 'center', 'class': 'mb-3'}, 'content': [
+                {'component': 'VCol', 'props': {'cols': 12, 'md': 8}, 'content': [
+                    {'component': 'div', 'text': row['source'], 'props': {'style': 'overflow-wrap:anywhere'}},
+                    {'component': 'div', 'text': f"{row.get('time', '')} | 标题：{row.get('selector') or '默认'} | {row.get('result', '')}", 'props': {'style': 'overflow-wrap:anywhere'}}]},
+                {'component': 'VCol', 'props': {'cols': 12, 'md': 4, 'class': 'd-flex ga-2 justify-end'}, 'content': [button('清除单条记录', 'clear_one', record_id), button('重新提取', 'redo', record_id)]}]})
+        return [{'component': 'VAlert', 'props': {'type': 'info', 'text': self._status}},
+                {'component': 'div', 'props': {'class': 'my-3'}, 'content': [button('清除记录', 'clear_all')]},
+                {'component': 'VAlert', 'props': {'type': 'warning', 'variant': 'tonal', 'text': '清除记录会同时清除成功标记，不删除文件；输出已删除时，下次扫描可能重新提取。重新提取仅处理所选原盘，并保留已有输出。'}},
+                {'component': 'VContainer', 'content': content}]
+
+    def record_action(self, payload: dict):
+        """按服务端记录执行操作，拒绝运行中修改或重复排队。"""
+        if not self._lock.acquire(blocking=False):
+            return {'success': False, 'message': '任务正在运行，请结束后再操作'}
+        try:
+            if self._pending or self._stopping.is_set():
+                return {'success': False, 'message': '任务等待执行或插件正在停止'}
+            action = payload.get('action')
+            record_id = payload.get('record_id', '')
+            rows = self._record_rows()
+            if action not in ('clear_all', 'clear_one', 'redo'):
+                return {'success': False, 'message': '无效操作'}
+            if action != 'clear_all' and record_id not in rows:
+                self._status = '记录已不存在，请刷新页面'
+                return {'success': False, 'message': self._status}
+            if action == 'redo':
+                row = rows[record_id]
+                source = Path(row['source'])
+                if not source.is_absolute() or not disc_kind(source, row.get('kind') or self._config.get('iso_kind', 'bluray')):
+                    self._status = '无法重新提取：原盘不存在或不是有效原盘根目录'
+                    return {'success': False, 'message': self._status}
+                self._pending = True
+                try:
+                    accepted = add_plugin_once_job(self.__class__.__name__, 'redo-record', self.scan, '单条重新提取', delay_seconds=1, func_kwargs={'redo': True, 'record': dict(row)})
+                    if not accepted:
+                        raise RuntimeError('宿主调度器未就绪')
+                except Exception as exc:
+                    self._pending = False
+                    self._status = f'排队失败：{exc}'
+                    return {'success': False, 'message': self._status}
+                self._status = f'已排队，仅重新提取：{source}'
+            else:
+                history = self.get_data('history') or []
+                self.save_data('history', [] if action == 'clear_all' else [row for row in history if self._row_id(row) != record_id])
+                for key, row in self._completed_rows():
+                    if action == 'clear_all' or self._row_id(row) == record_id:
+                        self.del_data(key)
+                self._status = '已清除全部记录和完成标记' if action == 'clear_all' else '已清除该原盘标题的记录和完成标记'
+            return {'success': True, 'message': self._status}
+        finally:
+            self._lock.release()
+
+    def scan(self, redo=False, record=None):
         """串行处理原盘，逐项记载结果并支持停止。"""
-        if self._stopping.is_set() or not self._lock.acquire(blocking=False):
+        if self._stopping.is_set() or (self._pending and record is None) or not self._lock.acquire(blocking=False):
             return
         try:
             cfg = dict(self._config)
+            if record is not None:
+                cfg.update(source=record['source'], selector=record.get('selector', ''), iso_kind=record.get('kind') or cfg.get('iso_kind', 'bluray'))
             cfg['selector'] = str(cfg.get('selector') or '').strip()
             if cfg['selector'] and not cfg['selector'].isascii():
                 raise ValueError('标题编号必须为 ASCII 数字')
@@ -168,7 +245,7 @@ class DiscRemux(_PluginBase):
                     result = f'失败：{exc}'
                     logger.error(f'原盘提取 {source}: {result}')
                 history = self.get_data('history') or []
-                history.append({'time': datetime.now().isoformat(timespec='seconds'), 'source': str(source), 'selector': cfg['selector'], 'result': result[:12000]})
+                history.append({'time': datetime.now().isoformat(timespec='seconds'), 'source': str(source), 'kind': kind, 'selector': cfg['selector'], 'result': result[:12000]})
                 self.save_data('history', history[-100:])
             self._status = f'扫描结束，发现 {count} 个原盘'
             logger.info(self._status)
@@ -177,6 +254,8 @@ class DiscRemux(_PluginBase):
             logger.error(self._status)
         finally:
             self._engine = None
+            if record is not None:
+                self._pending = False
             self._lock.release()
 
     def _report_runtime(self, message):
@@ -206,3 +285,5 @@ class DiscRemux(_PluginBase):
         if self._engine:
             self._engine.cancel.set()
         remove_plugin_once_job(self.__class__.__name__, 'scan')
+        remove_plugin_once_job(self.__class__.__name__, 'redo-record')
+        self._pending = False

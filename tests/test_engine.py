@@ -129,7 +129,7 @@ class EngineTests(unittest.TestCase):
 
     def test_metadata(self):
         manifest = json.loads((Path(__file__).resolve().parents[1] / 'package.v3.json').read_text(encoding='utf-8'))
-        self.assertEqual(manifest['DiscRemux']['version'], '1.3.2')
+        self.assertEqual(manifest['DiscRemux']['version'], '1.4.0')
 
     def test_playlist_log_detection(self):
         self.runner.ffprobe = sys.executable

@@ -30,7 +30,8 @@ class RecordsTests(unittest.TestCase):
             spec.loader.exec_module(self.module)
         self.plugin = self.module.DiscRemux()
         self.data = {}
-        self.plugin.get_data = self.data.get
+        self.plugin.get_data = lambda key=None: self.data.get(key) if key else [types.SimpleNamespace(key=k, value=v) for k, v in self.data.items()]
+        self.plugin.del_data = lambda key: self.data.pop(key, None)
         self.plugin.save_data = self.data.__setitem__
         self.plugin._config = {**self.plugin.get_form()[1], 'source': str(self.source), 'output': str(self.output)}
         self.runner = Mock()
@@ -83,3 +84,37 @@ class RecordsTests(unittest.TestCase):
         self.plugin.scan(redo=True)
         self.runner.remux.assert_not_called()
         self.assertIn('单个 ISO', self.plugin._status)
+
+    def test_row_redo_only_selected_source(self):
+        self.plugin.scan()
+        self.plugin._config['source'] = str(self.source.parent)
+        record_id = next(iter(self.plugin._record_rows()))
+        with patch.object(self.module, 'add_plugin_once_job', return_value=True) as schedule:
+            result = self.plugin.record_action({'action': 'redo', 'record_id': record_id})
+            self.assertTrue(result['success'])
+            kwargs = schedule.call_args.kwargs['func_kwargs']
+            self.assertEqual(kwargs['record']['source'], str(self.source))
+        self.plugin.scan(**kwargs)
+        self.assertEqual(self.runner.remux.call_args.args[0], self.source)
+        self.assertFalse(self.plugin._pending)
+
+    def test_clear_one_removes_all_matching_history_and_marker(self):
+        self.plugin.scan()
+        record_id = next(iter(self.plugin._record_rows()))
+        self.data['history'] *= 3
+        self.assertTrue(self.plugin.record_action({'action': 'clear_one', 'record_id': record_id})['success'])
+        self.assertEqual(self.plugin._record_rows(), {})
+        self.assertTrue(self.source.exists())
+
+    def test_clear_all_and_invalid_id(self):
+        self.plugin.scan()
+        self.assertFalse(self.plugin.record_action({'action': 'redo', 'record_id': 'fake'})['success'])
+        self.assertTrue(self.plugin.record_action({'action': 'clear_all'})['success'])
+        self.assertEqual(self.plugin._record_rows(), {})
+
+    def test_page_has_row_buttons(self):
+        self.plugin.scan()
+        page = str(self.plugin.get_page())
+        self.assertIn('清除单条记录', page)
+        self.assertIn('重新提取', page)
+        self.assertNotIn('redo_once', str(self.plugin.get_form()))
