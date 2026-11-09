@@ -44,7 +44,7 @@ volumes:
 
 输入 `/discs`，输出 `/remux`。输入也可以是单个 ISO 或包含 BDMV/VIDEO_TS 的原盘根目录。不要直接填写 BDMV/STREAM。输出可以位于扫描目录内，例如输入 `/media/downloads`、输出 `/media/downloads/REMUX`；扫描时自动排除整个输出目录。输出不能与输入相同，也不能是输入的父目录。请仅扫描已下载完成且不再写入的原盘，插件不连接下载器判断下载状态。
 
-输出保留相对目录，并带来源和显式标题后缀：`Film.iso.mkv`、`Film.disc.mkv`、`Film.iso.800.mkv`。现有输出直接跳过；若更换了同名源文件，需要自行移走旧输出才能重做。
+输出保留相对目录，ISO 去掉扩展名后加 `.mkv`，原盘目录名直接加 `.mkv`：`Film.iso` → `Film.mkv`；指定标题时为 `Film.800.mkv`。现有输出直接跳过，也兼容检测旧的 `.iso.mkv` / `.disc.mkv` 命名，不自动重命名已有文件。同目录下同名 ISO 和目录视为同一输出，后处理者跳过；如需两份结果，请分别指定输出目录。若更换了同名源文件，需要自行移走旧输出才能重做。
 
 ## 任务与数据保护
 
@@ -62,7 +62,7 @@ python -m compileall -q plugins.v3
 python -m unittest discover -s tests -v
 ```
 
-测试覆盖目录发现、导航参数、全轨复制命令、重复输出保护、锁竞争、校验失败清理、进程错误/超时及取消。本地 Python 3.13 的 28 项测试已通过；当前 GitHub 授权未包含 workflow 权限，仓库暂未启用 Actions。
+测试覆盖目录发现、导航参数、全轨复制命令、重复输出保护、锁竞争、校验失败清理、进程错误/超时及取消。本地 Python 3.13 的 30 项测试已通过；当前 GitHub 授权未包含 workflow 权限，仓库暂未启用 Actions。
 
 当前属于首版：已对照 MoviePilot v3 官方 SDK 编写，尚未在真实 MoviePilot 实例中安装，也未使用真实蓝光/DVD/ISO 样本做端到端验证。首次使用请先用一部已知标题的原盘核对音轨、字幕、章节与播放情况。
 

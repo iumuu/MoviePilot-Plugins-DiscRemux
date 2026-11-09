@@ -8,7 +8,7 @@ from app.sdk.plugin import _PluginBase
 from app.sdk.logging import logger
 from app.sdk.scheduler import add_plugin_once_job, remove_plugin_once_job
 
-from .engine import RemuxEngine, discover, disc_kind, validate_output
+from .engine import RemuxEngine, discover, disc_kind, validate_output, output_path
 from .runtime import select_tools
 
 
@@ -17,7 +17,7 @@ class DiscRemux(_PluginBase):
     plugin_name = '原盘无损提取'
     plugin_desc = '使用 FFmpeg 将蓝光/DVD 目录及 ISO 无损封装为 MKV。'
     plugin_icon = 'DVD.png'
-    plugin_version = '1.2.0'
+    plugin_version = '1.2.1'
     plugin_author = 'DiscRemux Contributors'
     author_url = ''
     plugin_config_prefix = 'discremux_'
@@ -131,12 +131,7 @@ class DiscRemux(_PluginBase):
                     if kind not in checked:
                         engine.check(kind)
                         checked.add(kind)
-                    relative = Path(source.name) if source == root else source.relative_to(root)
-                    name = source.stem if source.is_file() else source.name
-                    # 保留来源类型与标题编号，避免同名 ISO/目录、不同标题互相覆盖。
-                    suffix = '.iso' if source.is_file() else '.disc'
-                    title = '.' + cfg['selector'] if cfg['selector'] else ''
-                    target = output / relative.parent / (name + suffix + title + '.mkv')
+                    target = output_path(source, root, output, cfg['selector'])
                     result = engine.remux(source, target, kind, cfg['selector'].strip())
                     logger.info(f'原盘提取 {source}: {result}')
                 except Exception as exc:

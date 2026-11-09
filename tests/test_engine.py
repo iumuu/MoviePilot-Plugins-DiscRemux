@@ -128,7 +128,29 @@ class EngineTests(unittest.TestCase):
 
     def test_metadata(self):
         manifest = json.loads((Path(__file__).resolve().parents[1] / 'package.v3.json').read_text(encoding='utf-8'))
-        self.assertEqual(manifest['DiscRemux']['version'], '1.2.0')
+        self.assertEqual(manifest['DiscRemux']['version'], '1.2.1')
+
+    def test_clean_output_names(self):
+        source = self.root / 'Film.2026.ISO'
+        source.touch()
+        output = self.root / 'REMUX'
+        self.assertEqual(engine.output_path(source, self.root, output), output / 'Film.2026.mkv')
+        self.assertEqual(engine.output_path(source, source, output, '800'), output / 'Film.2026.800.mkv')
+        disc = self.root / 'Film.2026'
+        disc.mkdir()
+        self.assertEqual(engine.output_path(disc, self.root, output), output / 'Film.2026.mkv')
+
+    def test_legacy_output_is_reused(self):
+        source = self.root / 'Film.iso'
+        source.touch()
+        output = self.root / 'REMUX'
+        output.mkdir()
+        legacy = output / 'Film.iso.mkv'
+        legacy.touch()
+        self.assertEqual(engine.output_path(source, self.root, output), legacy)
+        current = output / 'Film.mkv'
+        current.touch()
+        self.assertEqual(engine.output_path(source, self.root, output), current)
 
     def test_progress_values(self):
         message = engine.format_progress({'out_time_us': '60000000', 'speed': '2x', 'total_size': '1073741824'}, 120, 30)

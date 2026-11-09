@@ -31,6 +31,20 @@ def format_progress(data, duration, elapsed):
     return f'提取中 {percent} | 已处理 {seconds / 60:.1f} 分钟 | 速度 {speed:.2f}x | 输出 {size:.2f} GiB | 预计剩余 {eta} | 已运行 {elapsed:.0f} 秒'
 
 
+def output_path(source: Path, root: Path, output: Path, selector='') -> Path:
+    """生成简洁 MKV 名称；旧命名已存在时沿用以避免重复提取。"""
+    relative = Path(source.name) if source == root else source.relative_to(root)
+    is_iso = source.is_file()
+    name = source.stem if is_iso else source.name
+    title = '.' + selector if selector else ''
+    folder = output / relative.parent
+    target = folder / (name + title + '.mkv')
+    legacy = folder / (name + ('.iso' if is_iso else '.disc') + title + '.mkv')
+    if not target.exists() and legacy.exists():
+        return legacy
+    return target
+
+
 def disc_kind(path: Path, iso_kind: str = 'bluray') -> str | None:
     """根据结构识别原盘；ISO 类型由用户明确指定。"""
     if path.is_file() and path.suffix.lower() == '.iso':
