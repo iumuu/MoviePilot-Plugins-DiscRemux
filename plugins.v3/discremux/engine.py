@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shlex
 import signal
@@ -11,6 +12,23 @@ import threading
 import time
 from collections import Counter
 from pathlib import Path
+
+
+def format_progress(data, duration, elapsed):
+    """格式化机器进度，缺失数值不伪造百分比或预计时间。"""
+    def number(value):
+        """读取 FFmpeg 可能返回的 N/A 或非有限值。"""
+        try:
+            result = float(value)
+            return max(0, result) if math.isfinite(result) else 0
+        except (TypeError, ValueError):
+            return 0
+    seconds = number(data.get('out_time_us')) / 1000000
+    speed = number(str(data.get('speed', '')).rstrip('x'))
+    percent = f'{min(99.9, seconds / duration * 100):.1f}%' if duration > 0 else '总时长未知'
+    eta = f'{max(0, duration - seconds) / speed / 60:.1f} 分钟' if duration > 0 and speed > 0 else '计算中'
+    size = number(data.get('total_size')) / (1024 ** 3)
+    return f'提取中 {percent} | 已处理 {seconds / 60:.1f} 分钟 | 速度 {speed:.2f}x | 输出 {size:.2f} GiB | 预计剩余 {eta} | 已运行 {elapsed:.0f} 秒'
 
 
 def disc_kind(path: Path, iso_kind: str = 'bluray') -> str | None:
@@ -75,11 +93,15 @@ def input_args(source: Path, kind: str, selector: str = '') -> list[str]:
 class RemuxEngine:
     """可取消的 FFmpeg 执行器，验证后再提交输出。"""
 
-    def __init__(self, ffmpeg='ffmpeg', ffprobe='ffprobe', timeout=43200):
+    def __init__(self, ffmpeg='ffmpeg', ffprobe='ffprobe', timeout=43200, report=None):
         """初始化工具路径及最长任务时长。"""
         self.ffmpeg, self.ffprobe = ffmpeg, ffprobe
         self.timeout = timeout
         self.cancel = threading.Event()
+        self.report = report or (lambda message: None)
+        self.stage = '检查工具'
+        self.duration = 0
+        self.progress_file = None
 
     def run(self, args: list[str]) -> str:
         """使用文件承接子进程输出，防止管道阻塞并支持中止。"""
@@ -88,12 +110,24 @@ class RemuxEngine:
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
             proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=out, stderr=err)
             started = time.monotonic()
+            last_update = started
             try:
                 while proc.poll() is None:
                     if self.cancel.wait(0.2):
                         raise RuntimeError('任务已停止')
                     if time.monotonic() - started > self.timeout:
                         raise TimeoutError('FFmpeg/FFprobe 超时')
+                    if time.monotonic() - last_update >= 2:
+                        elapsed = time.monotonic() - started
+                        message = f'{self.stage}，已运行 {elapsed:.0f} 秒'
+                        if self.progress_file:
+                            with open(self.progress_file, 'rb') as progress:
+                                progress.seek(0, 2)
+                                progress.seek(max(0, progress.tell() - 8192))
+                                data = dict(line.split('=', 1) for line in progress.read().decode('utf-8', 'replace').splitlines() if '=' in line)
+                            message = format_progress(data, self.duration, elapsed)
+                        self.report(message)
+                        last_update = time.monotonic()
                 if proc.returncode:
                     err.seek(0, 2)
                     size = err.tell()
@@ -139,7 +173,10 @@ class RemuxEngine:
         if target.exists():
             return '已跳过：目标已存在'
         args = input_args(source, kind, selector)
+        self.stage = '探测原盘轨道与时长'
+        self.report(self.stage)
         original = self.probe(args)
+        self.duration = float(original.get('format', {}).get('duration') or 0)
         streams = [s for s in original.get('streams', []) if s.get('codec_type') in ('video', 'audio', 'subtitle')]
         if not any(s['codec_type'] == 'video' for s in streams):
             raise RuntimeError('未找到视频轨道')
@@ -155,7 +192,17 @@ class RemuxEngine:
             os.close(fd)
             temp = Path(name)
             maps = [arg for s in streams for arg in ('-map', '0:' + str(s['index']))]
-            self.run([self.ffmpeg, '-hide_banner', '-loglevel', 'info', '-nostats', '-nostdin', '-y', *args, *maps, '-map_metadata', '0', '-map_chapters', '0', '-c', 'copy', '-max_muxing_queue_size', '4096', '-f', 'matroska', str(temp)])
+            self.stage = '无损提取'
+            self.report('开始无损提取，等待 FFmpeg 进度')
+            with tempfile.TemporaryDirectory(prefix='discremux-') as progress_dir:
+                self.progress_file = Path(progress_dir) / 'progress.txt'
+                self.progress_file.touch()
+                try:
+                    self.run([self.ffmpeg, '-hide_banner', '-loglevel', 'info', '-nostats', '-progress', str(self.progress_file), '-stats_period', '1', '-nostdin', '-y', *args, *maps, '-map_metadata', '0', '-map_chapters', '0', '-c', 'copy', '-max_muxing_queue_size', '4096', '-f', 'matroska', str(temp)])
+                finally:
+                    self.progress_file = None
+            self.stage = '校验输出（尚未完成）'
+            self.report(self.stage)
             actual = self.probe(['-i', str(temp)])
             expected_tracks = Counter((s['codec_type'], s['codec_name']) for s in streams)
             actual_tracks = Counter((s['codec_type'], s['codec_name']) for s in actual.get('streams', []))
@@ -171,6 +218,7 @@ class RemuxEngine:
                 raise RuntimeError('任务已停止')
             # 同目录硬链接原子创建最终名称；已存在时失败，永不覆盖。
             os.link(temp, target)
+            self.report('完成 100%：输出校验通过')
             return '完成'
         finally:
             if temp is not None:

@@ -1,5 +1,6 @@
 """MoviePilot v3 原盘无损提取插件。"""
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -16,7 +17,7 @@ class DiscRemux(_PluginBase):
     plugin_name = '原盘无损提取'
     plugin_desc = '使用 FFmpeg 将蓝光/DVD 目录及 ISO 无损封装为 MKV。'
     plugin_icon = 'DVD.png'
-    plugin_version = '1.1.0'
+    plugin_version = '1.2.0'
     plugin_author = 'DiscRemux Contributors'
     author_url = ''
     plugin_config_prefix = 'discremux_'
@@ -32,6 +33,8 @@ class DiscRemux(_PluginBase):
         self._engine = None
         self._stopping = threading.Event()
         self._status = '等待任务'
+        self._last_progress_log = 0
+        self._progress_source = ''
 
     def init_plugin(self, config=None):
         """应用配置，停止旧任务后注册一次性任务。"""
@@ -109,7 +112,7 @@ class DiscRemux(_PluginBase):
                 raise ValueError('输入路径不存在')
             validate_output(root, output)
             ffmpeg, ffprobe = select_tools(cfg, self._stopping, self._report_runtime)
-            engine = RemuxEngine(ffmpeg, ffprobe, max(1, float(cfg['timeout'])) * 3600)
+            engine = RemuxEngine(ffmpeg, ffprobe, max(1, float(cfg['timeout'])) * 3600, report=self._report_progress)
             self._engine = engine
             if self._stopping.is_set():
                 engine.cancel.set()
@@ -121,6 +124,8 @@ class DiscRemux(_PluginBase):
                     break
                 count += 1
                 self._status = f'正在提取：{source}'
+                self._progress_source = source.name
+                self._last_progress_log = 0
                 try:
                     kind = disc_kind(source, cfg['iso_kind'])
                     if kind not in checked:
@@ -141,6 +146,7 @@ class DiscRemux(_PluginBase):
                 history.append({'time': datetime.now().isoformat(timespec='seconds'), 'source': str(source), 'result': result[:12000]})
                 self.save_data('history', history[-100:])
             self._status = f'扫描结束，发现 {count} 个原盘'
+            logger.info(self._status)
         except Exception as exc:
             self._status = f'扫描失败：{exc}'
             logger.error(self._status)
@@ -152,6 +158,22 @@ class DiscRemux(_PluginBase):
         """在详情和宿主日志中显示依赖准备状态。"""
         self._status = message
         logger.info(message)
+
+    def _report_progress(self, message):
+        """更新详情状态，进度日志每十秒输出，阶段切换立即输出。"""
+        self._status = f'{self._progress_source} | {message}'
+        periodic = message.startswith('提取中') or '已运行' in message
+        if not periodic or time.monotonic() - self._last_progress_log >= 10:
+            logger.info(self._status)
+            self._last_progress_log = time.monotonic()
+
+    def get_dashboard_meta(self):
+        """提供可自动刷新的实时进度卡片。"""
+        return [{'key': 'progress', 'name': '原盘提取进度'}]
+
+    def get_dashboard(self, key, **kwargs):
+        """每三秒刷新任务阶段与当前进度。"""
+        return {'cols': 12, 'md': 6}, {'refresh': 3, 'title': self.plugin_name}, [{'component': 'VAlert', 'props': {'type': 'info', 'text': self._status}}]
 
     def stop_service(self):
         """取消待执行任务并通知正在运行的子进程退出。"""

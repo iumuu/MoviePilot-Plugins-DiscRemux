@@ -128,7 +128,33 @@ class EngineTests(unittest.TestCase):
 
     def test_metadata(self):
         manifest = json.loads((Path(__file__).resolve().parents[1] / 'package.v3.json').read_text(encoding='utf-8'))
-        self.assertEqual(manifest['DiscRemux']['version'], '1.1.0')
+        self.assertEqual(manifest['DiscRemux']['version'], '1.2.0')
+
+    def test_progress_values(self):
+        message = engine.format_progress({'out_time_us': '60000000', 'speed': '2x', 'total_size': '1073741824'}, 120, 30)
+        self.assertIn('50.0%', message)
+        self.assertIn('1.00 GiB', message)
+        self.assertIn('0.5 分钟', message)
+
+    def test_progress_unknown(self):
+        message = engine.format_progress({'speed': 'N/A', 'out_time_us': 'N/A'}, 0, 10)
+        self.assertIn('总时长未知', message)
+        self.assertIn('计算中', message)
+
+    def test_progress_does_not_claim_completion(self):
+        message = engine.format_progress({'out_time_us': '150000000', 'speed': 'inf'}, 120, 1)
+        self.assertIn('99.9%', message)
+        self.assertNotIn('100%', message)
+
+    def test_progress_callback_while_process_running(self):
+        progress = self.root / 'progress.txt'
+        progress.write_text('out_time_us=60000000' + chr(10) + 'speed=2x' + chr(10))
+        self.runner.progress_file = progress
+        self.runner.duration = 120
+        events = []
+        self.runner.report = events.append
+        self.runner.run([sys.executable, '-c', 'import time; time.sleep(2.5)'])
+        self.assertTrue(any('50.0%' in item for item in events))
 
 
 if __name__ == '__main__':
