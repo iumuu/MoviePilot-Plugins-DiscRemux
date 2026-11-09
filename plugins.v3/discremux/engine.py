@@ -24,18 +24,33 @@ def disc_kind(path: Path, iso_kind: str = 'bluray') -> str | None:
     return None
 
 
-def discover(root: Path, iso_kind: str = 'bluray'):
-    """遍历原盘根目录，发现原盘后不再进入其内部。"""
+def validate_output(root: Path, output: Path):
+    """允许输出位于扫描目录内，但禁止同目录或输出包含输入。"""
+    root, output = root.resolve(), output.resolve()
+    if root == output or root.is_relative_to(output):
+        raise ValueError('输出目录不能与输入相同，也不能是输入的父目录；可以使用输入下的 REMUX 子目录')
+
+
+def discover(root: Path, iso_kind: str = 'bluray', exclude: Path | None = None):
+    """遍历原盘根目录，跳过输出子树，发现原盘后不再进入其内部。"""
+    root = root.resolve()
+    excluded = exclude.resolve() if exclude is not None else None
+    if excluded is not None and root.is_relative_to(excluded):
+        return
     if disc_kind(root, iso_kind):
         yield root
         return
     for folder, dirs, files in os.walk(root, followlinks=False):
         base = Path(folder)
+        if excluded is not None and base.resolve().is_relative_to(excluded):
+            dirs[:] = []
+            continue
         if disc_kind(base, iso_kind):
             dirs[:] = []
             yield base
             continue
-        dirs[:] = [d for d in dirs if not (base / d).is_symlink()]
+        dirs[:] = [d for d in dirs if not (base / d).is_symlink()
+                   and (excluded is None or not (base / d).resolve().is_relative_to(excluded))]
         for name in sorted(files):
             item = base / name
             if item.suffix.lower() == '.iso' and not item.is_symlink():

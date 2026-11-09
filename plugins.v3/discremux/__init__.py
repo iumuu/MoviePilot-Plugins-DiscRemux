@@ -7,7 +7,7 @@ from app.sdk.plugin import _PluginBase
 from app.sdk.logging import logger
 from app.sdk.scheduler import add_plugin_once_job, remove_plugin_once_job
 
-from .engine import RemuxEngine, discover, disc_kind
+from .engine import RemuxEngine, discover, disc_kind, validate_output
 
 
 class DiscRemux(_PluginBase):
@@ -15,7 +15,7 @@ class DiscRemux(_PluginBase):
     plugin_name = '原盘无损提取'
     plugin_desc = '使用 FFmpeg 将蓝光/DVD 目录及 ISO 无损封装为 MKV。'
     plugin_icon = 'DVD.png'
-    plugin_version = '1.0.0'
+    plugin_version = '1.0.1'
     plugin_author = 'DiscRemux Contributors'
     author_url = ''
     plugin_config_prefix = 'discremux_'
@@ -73,7 +73,7 @@ class DiscRemux(_PluginBase):
         fields = []
         for key, label in [('enabled', '启用周期扫描'), ('run_once', '保存后立即运行一次')]:
             fields.append({'component': 'VSwitch', 'props': {'model': key, 'label': label}})
-        for key, label in [('source', '原盘文件或扫描目录（容器内绝对路径）'), ('output', 'MKV 输出目录（须与扫描目录分开）'), ('selector', '蓝光播放列表号/DVD标题号（留空：蓝光主标题、DVD标题1）'), ('interval', '扫描间隔（分钟）'), ('ffmpeg', 'FFmpeg 程序路径'), ('ffprobe', 'FFprobe 程序路径'), ('timeout', '每个子进程最长运行小时数')]:
+        for key, label in [('source', '原盘文件或扫描目录（容器内绝对路径）'), ('output', 'MKV 输出目录（可为扫描目录下的 REMUX，扫描时自动排除）'), ('selector', '蓝光播放列表号/DVD标题号（留空：蓝光主标题、DVD标题1）'), ('interval', '扫描间隔（分钟）'), ('ffmpeg', 'FFmpeg 程序路径'), ('ffprobe', 'FFprobe 程序路径'), ('timeout', '每个子进程最长运行小时数')]:
             fields.append({'component': 'VTextField', 'props': {'model': key, 'label': label}})
         fields.append({'component': 'VSelect', 'props': {'model': 'iso_kind', 'label': 'ISO 类型', 'items': [{'title': '蓝光 / UHD Blu-ray', 'value': 'bluray'}, {'title': 'DVD', 'value': 'dvd'}]}})
         fields.append({'component': 'VAlert', 'props': {'type': 'info', 'variant': 'tonal', 'text': '仅处理已完整下载、可读取的原盘。音视频字幕均使用 copy；不保留菜单，不转码，不删除源文件，不覆盖已有 MKV。蓝光需 libbluray，DVD 需 dvdvideo。多版本/剧集原盘请指定标题；混合 ISO 请分批配置。输出磁盘需支持硬链接。'}})
@@ -103,8 +103,7 @@ class DiscRemux(_PluginBase):
             root, output = root.resolve(), output.resolve()
             if not root.exists():
                 raise ValueError('输入路径不存在')
-            if output == root or output.is_relative_to(root) or root.is_relative_to(output):
-                raise ValueError('输入输出目录不能相同或互相包含')
+            validate_output(root, output)
             engine = RemuxEngine(cfg['ffmpeg'], cfg['ffprobe'], max(1, float(cfg['timeout'])) * 3600)
             self._engine = engine
             if self._stopping.is_set():
@@ -112,7 +111,7 @@ class DiscRemux(_PluginBase):
                 return
             checked = set()
             count = 0
-            for source in discover(root, cfg['iso_kind']):
+            for source in discover(root, cfg['iso_kind'], exclude=output):
                 if self._stopping.is_set():
                     break
                 count += 1

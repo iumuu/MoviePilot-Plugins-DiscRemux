@@ -30,6 +30,29 @@ class EngineTests(unittest.TestCase):
         (self.root / 'VIDEO_TS').mkdir()
         self.assertEqual(engine.disc_kind(self.root), 'dvd')
 
+    def test_nested_output_excluded(self):
+        output = self.root / 'REMUX'
+        (output / 'nested/BDMV').mkdir(parents=True)
+        (output / 'ignored.iso').touch()
+        (self.root / 'original.iso').touch()
+        (self.root / 'REMUX-other').mkdir()
+        (self.root / 'REMUX-other/keep.iso').touch()
+        engine.validate_output(self.root, output)
+        self.assertEqual(set(engine.discover(self.root, exclude=output)),
+                         {self.root / 'original.iso', self.root / 'REMUX-other/keep.iso'})
+
+    def test_output_not_yet_created(self):
+        (self.root / 'original.iso').touch()
+        output = self.root / 'new/REMUX'
+        engine.validate_output(self.root, output)
+        self.assertEqual(list(engine.discover(self.root, exclude=output)), [self.root / 'original.iso'])
+
+    def test_output_path_validation(self):
+        for output in [self.root, self.root.parent, self.root / 'REMUX/..']:
+            with self.assertRaises(ValueError):
+                engine.validate_output(self.root, output)
+        engine.validate_output(self.root, self.root.parent / 'separate-output')
+
     def test_bluray_navigation(self):
         args = engine.input_args(self.root, 'bluray', '00800')
         self.assertEqual(args, ['-playlist', '800', '-i', 'bluray:' + str(self.root)])
@@ -105,7 +128,7 @@ class EngineTests(unittest.TestCase):
 
     def test_metadata(self):
         manifest = json.loads((Path(__file__).resolve().parents[1] / 'package.v3.json').read_text(encoding='utf-8'))
-        self.assertEqual(manifest['DiscRemux']['version'], '1.0.0')
+        self.assertEqual(manifest['DiscRemux']['version'], '1.0.1')
 
 
 if __name__ == '__main__':
