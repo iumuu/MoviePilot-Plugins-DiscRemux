@@ -20,7 +20,7 @@ class DiscRemux(_PluginBase):
     plugin_name = '原盘无损提取'
     plugin_desc = '使用 FFmpeg 将蓝光/DVD 目录及 ISO 无损封装为 MKV。'
     plugin_icon = 'DVD.png'
-    plugin_version = '1.4.0'
+    plugin_version = '1.4.1'
     plugin_author = 'DiscRemux Contributors'
     author_url = ''
     plugin_config_prefix = 'discremux_'
@@ -133,24 +133,24 @@ class DiscRemux(_PluginBase):
     def record_action(self, payload: dict):
         """按服务端记录执行操作，拒绝运行中修改或重复排队。"""
         if not self._lock.acquire(blocking=False):
-            return {'success': False, 'message': '任务正在运行，请结束后再操作'}
+            return {'success': False, 'data': None, 'message': '任务正在运行，请结束后再操作'}
         try:
             if self._pending or self._stopping.is_set():
-                return {'success': False, 'message': '任务等待执行或插件正在停止'}
+                return {'success': False, 'data': None, 'message': '任务等待执行或插件正在停止'}
             action = payload.get('action')
             record_id = payload.get('record_id', '')
             rows = self._record_rows()
             if action not in ('clear_all', 'clear_one', 'redo'):
-                return {'success': False, 'message': '无效操作'}
+                return {'success': False, 'data': None, 'message': '无效操作'}
             if action != 'clear_all' and record_id not in rows:
                 self._status = '记录已不存在，请刷新页面'
-                return {'success': False, 'message': self._status}
+                return {'success': False, 'data': None, 'message': self._status}
             if action == 'redo':
                 row = rows[record_id]
                 source = Path(row['source'])
                 if not source.is_absolute() or not disc_kind(source, row.get('kind') or self._config.get('iso_kind', 'bluray')):
                     self._status = '无法重新提取：原盘不存在或不是有效原盘根目录'
-                    return {'success': False, 'message': self._status}
+                    return {'success': False, 'data': None, 'message': self._status}
                 self._pending = True
                 try:
                     accepted = add_plugin_once_job(self.__class__.__name__, 'redo-record', self.scan, '单条重新提取', delay_seconds=1, func_kwargs={'redo': True, 'record': dict(row)})
@@ -159,7 +159,7 @@ class DiscRemux(_PluginBase):
                 except Exception as exc:
                     self._pending = False
                     self._status = f'排队失败：{exc}'
-                    return {'success': False, 'message': self._status}
+                    return {'success': False, 'data': None, 'message': self._status}
                 self._status = f'已排队，仅重新提取：{source}'
             else:
                 history = self.get_data('history') or []
@@ -168,7 +168,7 @@ class DiscRemux(_PluginBase):
                     if action == 'clear_all' or self._row_id(row) == record_id:
                         self.del_data(key)
                 self._status = '已清除全部记录和完成标记' if action == 'clear_all' else '已清除该原盘标题的记录和完成标记'
-            return {'success': True, 'message': self._status}
+            return {'success': True, 'data': None, 'message': self._status}
         finally:
             self._lock.release()
 

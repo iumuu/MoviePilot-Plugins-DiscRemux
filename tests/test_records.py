@@ -118,3 +118,15 @@ class RecordsTests(unittest.TestCase):
         self.assertIn('清除单条记录', page)
         self.assertIn('重新提取', page)
         self.assertNotIn('redo_once', str(self.plugin.get_form()))
+
+    def test_response_envelope(self):
+        for payload in [{'action': 'clear_all'}, {'action': 'invalid'}, {'action': 'redo', 'record_id': 'missing'}]:
+            response = self.plugin.record_action(payload)
+            self.assertEqual(set(response), {'success', 'message', 'data'})
+            self.assertIsInstance(response['success'], bool)
+            self.assertIsInstance(response['message'], str)
+        self.plugin._pending = True
+        self.assertEqual(set(self.plugin.record_action({'action': 'clear_all'})), {'success', 'message', 'data'})
+        self.plugin._pending = False
+        with self.plugin._lock:
+            self.assertEqual(set(self.plugin.record_action({'action': 'clear_all'})), {'success', 'message', 'data'})
