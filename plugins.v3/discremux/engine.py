@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
+import signal
 import subprocess
 import tempfile
 import threading
@@ -94,8 +96,22 @@ class RemuxEngine:
                         raise TimeoutError('FFmpeg/FFprobe 超时')
                 if proc.returncode:
                     err.seek(0, 2)
-                    err.seek(max(0, err.tell() - 6000))
-                    raise RuntimeError(err.read().decode('utf-8', 'replace'))
+                    size = err.tell()
+                    err.seek(0)
+                    details = err.read(2000)
+                    if size > 2000:
+                        err.seek(max(2000, size - 4000))
+                        details += b'\n... [stderr tail] ...\n' + err.read()
+                    reason = f'退出码 {proc.returncode}'
+                    if os.name == 'posix' and proc.returncode < 0:
+                        try:
+                            reason += f' ({signal.Signals(-proc.returncode).name})'
+                        except ValueError:
+                            pass
+                    command = shlex.join(args)
+                    diagnostic = details.decode('utf-8', 'replace').strip() or '子进程没有输出错误详情'
+                    diagnostic = ' | '.join(diagnostic.splitlines())
+                    raise RuntimeError(f'{Path(args[0]).name} {reason}; 命令: {command}; stderr: {diagnostic}')
                 out.seek(0)
                 return out.read().decode('utf-8', 'replace')
             finally:
@@ -116,7 +132,7 @@ class RemuxEngine:
 
     def probe(self, args: list[str]) -> dict:
         """探测所选标题的轨道、时长和章节。"""
-        return json.loads(self.run([self.ffprobe, '-v', 'error', *args, '-show_streams', '-show_format', '-show_chapters', '-of', 'json']))
+        return json.loads(self.run([self.ffprobe, '-hide_banner', '-v', 'info', *args, '-show_streams', '-show_format', '-show_chapters', '-of', 'json']))
 
     def remux(self, source: Path, target: Path, kind: str, selector='') -> str:
         """逐轨复制视频音频字幕，校验完整性后原子发布且不覆盖已有文件。"""
@@ -139,7 +155,7 @@ class RemuxEngine:
             os.close(fd)
             temp = Path(name)
             maps = [arg for s in streams for arg in ('-map', '0:' + str(s['index']))]
-            self.run([self.ffmpeg, '-hide_banner', '-loglevel', 'error', '-nostdin', '-y', *args, *maps, '-map_metadata', '0', '-map_chapters', '0', '-c', 'copy', '-max_muxing_queue_size', '4096', '-f', 'matroska', str(temp)])
+            self.run([self.ffmpeg, '-hide_banner', '-loglevel', 'info', '-nostats', '-nostdin', '-y', *args, *maps, '-map_metadata', '0', '-map_chapters', '0', '-c', 'copy', '-max_muxing_queue_size', '4096', '-f', 'matroska', str(temp)])
             actual = self.probe(['-i', str(temp)])
             expected_tracks = Counter((s['codec_type'], s['codec_name']) for s in streams)
             actual_tracks = Counter((s['codec_type'], s['codec_name']) for s in actual.get('streams', []))

@@ -15,7 +15,7 @@ class DiscRemux(_PluginBase):
     plugin_name = '原盘无损提取'
     plugin_desc = '使用 FFmpeg 将蓝光/DVD 目录及 ISO 无损封装为 MKV。'
     plugin_icon = 'DVD.png'
-    plugin_version = '1.0.1'
+    plugin_version = '1.0.2'
     plugin_author = 'DiscRemux Contributors'
     author_url = ''
     plugin_config_prefix = 'discremux_'
@@ -133,7 +133,7 @@ class DiscRemux(_PluginBase):
                     result = f'失败：{exc}'
                     logger.error(f'原盘提取 {source}: {result}')
                 history = self.get_data('history') or []
-                history.append({'time': datetime.now().isoformat(timespec='seconds'), 'source': str(source), 'result': result[-6000:]})
+                history.append({'time': datetime.now().isoformat(timespec='seconds'), 'source': str(source), 'result': result[:12000]})
                 self.save_data('history', history[-100:])
             self._status = f'扫描结束，发现 {count} 个原盘'
         except Exception as exc:

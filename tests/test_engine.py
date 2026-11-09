@@ -128,7 +128,7 @@ class EngineTests(unittest.TestCase):
 
     def test_metadata(self):
         manifest = json.loads((Path(__file__).resolve().parents[1] / 'package.v3.json').read_text(encoding='utf-8'))
-        self.assertEqual(manifest['DiscRemux']['version'], '1.0.1')
+        self.assertEqual(manifest['DiscRemux']['version'], '1.0.2')
 
 
 if __name__ == '__main__':
