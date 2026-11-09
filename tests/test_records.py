@@ -130,3 +130,30 @@ class RecordsTests(unittest.TestCase):
         self.plugin._pending = False
         with self.plugin._lock:
             self.assertEqual(set(self.plugin.record_action({'action': 'clear_all'})), {'success', 'message', 'data'})
+
+    def test_discovery_does_not_extract(self):
+        self.plugin.discover_sources()
+        self.runner.remux.assert_not_called()
+        self.tools.assert_not_called()
+        rows = self.plugin._record_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(next(iter(rows.values()))['source'], str(self.source))
+        self.assertIn('扫描原盘（不提取）', str(self.plugin.get_page()))
+
+    def test_extract_discovered_record_not_forced(self):
+        self.plugin.discover_sources()
+        record_id = next(iter(self.plugin._record_rows()))
+        with patch.object(self.module, 'add_plugin_once_job', return_value=True) as schedule:
+            result = self.plugin.record_action({'action': 'extract', 'record_id': record_id})
+            self.assertTrue(result['success'])
+            kwargs = schedule.call_args.kwargs['func_kwargs']
+            self.assertFalse(kwargs['redo'])
+            self.assertEqual(kwargs['record']['source'], str(self.source))
+        self.plugin.scan(**kwargs)
+        self.assertEqual(self.runner.remux.call_count, 1)
+
+    def test_clear_discovered_row(self):
+        self.plugin.discover_sources()
+        record_id = next(iter(self.plugin._record_rows()))
+        self.plugin.record_action({'action': 'clear_one', 'record_id': record_id})
+        self.assertEqual(self.plugin._record_rows(), {})

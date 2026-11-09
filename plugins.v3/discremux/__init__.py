@@ -20,7 +20,7 @@ class DiscRemux(_PluginBase):
     plugin_name = '原盘无损提取'
     plugin_desc = '使用 FFmpeg 将蓝光/DVD 目录及 ISO 无损封装为 MKV。'
     plugin_icon = 'DVD.png'
-    plugin_version = '1.4.1'
+    plugin_version = '1.5.0'
     plugin_author = 'DiscRemux Contributors'
     author_url = ''
     plugin_config_prefix = 'discremux_'
@@ -105,7 +105,7 @@ class DiscRemux(_PluginBase):
 
     def _record_rows(self):
         """按原盘及标题合并重复日志，加入持久成功记录。"""
-        rows = {}
+        rows = {self._row_id(row): dict(row) for row in self.get_data('discovered') or []}
         for _, row in self._completed_rows():
             rows[self._row_id(row)] = {**row, 'result': '完成（持久记录）'}
         for row in self.get_data('history') or []:
@@ -124,9 +124,9 @@ class DiscRemux(_PluginBase):
                 {'component': 'VCol', 'props': {'cols': 12, 'md': 8}, 'content': [
                     {'component': 'div', 'text': row['source'], 'props': {'style': 'overflow-wrap:anywhere'}},
                     {'component': 'div', 'text': f"{row.get('time', '')} | 标题：{row.get('selector') or '默认'} | {row.get('result', '')}", 'props': {'style': 'overflow-wrap:anywhere'}}]},
-                {'component': 'VCol', 'props': {'cols': 12, 'md': 4, 'class': 'd-flex ga-2 justify-end'}, 'content': [button('清除单条记录', 'clear_one', record_id), button('重新提取', 'redo', record_id)]}]})
-        return [{'component': 'VAlert', 'props': {'type': 'info', 'text': self._status}},
-                {'component': 'div', 'props': {'class': 'my-3'}, 'content': [button('清除记录', 'clear_all')]},
+                {'component': 'VCol', 'props': {'cols': 12, 'md': 4, 'class': 'd-flex ga-2 justify-end flex-wrap'}, 'content': [button('提取', 'extract', record_id), button('清除单条记录', 'clear_one', record_id), button('重新提取', 'redo', record_id)]}]})
+        return [{'component': 'VAlert', 'props': {'type': 'info', 'text': f'版本 {self.plugin_version} | {self._status}'}},
+                {'component': 'div', 'props': {'class': 'my-3 d-flex ga-2'}, 'content': [button('扫描原盘（不提取）', 'discover'), button('刷新列表', 'refresh'), button('清除记录', 'clear_all')]},
                 {'component': 'VAlert', 'props': {'type': 'warning', 'variant': 'tonal', 'text': '清除记录会同时清除成功标记，不删除文件；输出已删除时，下次扫描可能重新提取。重新提取仅处理所选原盘，并保留已有输出。'}},
                 {'component': 'VContainer', 'content': content}]
 
@@ -138,14 +138,27 @@ class DiscRemux(_PluginBase):
             if self._pending or self._stopping.is_set():
                 return {'success': False, 'data': None, 'message': '任务等待执行或插件正在停止'}
             action = payload.get('action')
+            if action == 'refresh':
+                return {'success': True, 'data': None, 'message': '列表已刷新'}
+            if action == 'discover':
+                self._pending = True
+                try:
+                    if not add_plugin_once_job(self.__class__.__name__, 'discover', self.discover_sources, '扫描原盘（不提取）', delay_seconds=1):
+                        raise RuntimeError('宿主调度器未就绪')
+                except Exception as exc:
+                    self._pending = False
+                    self._status = f'扫描排队失败：{exc}'
+                    return {'success': False, 'data': None, 'message': self._status}
+                self._status = '原盘扫描已排队；扫描完成后点击刷新列表'
+                return {'success': True, 'data': None, 'message': self._status}
             record_id = payload.get('record_id', '')
             rows = self._record_rows()
-            if action not in ('clear_all', 'clear_one', 'redo'):
+            if action not in ('clear_all', 'clear_one', 'redo', 'extract'):
                 return {'success': False, 'data': None, 'message': '无效操作'}
             if action != 'clear_all' and record_id not in rows:
                 self._status = '记录已不存在，请刷新页面'
                 return {'success': False, 'data': None, 'message': self._status}
-            if action == 'redo':
+            if action in ('redo', 'extract'):
                 row = rows[record_id]
                 source = Path(row['source'])
                 if not source.is_absolute() or not disc_kind(source, row.get('kind') or self._config.get('iso_kind', 'bluray')):
@@ -153,17 +166,19 @@ class DiscRemux(_PluginBase):
                     return {'success': False, 'data': None, 'message': self._status}
                 self._pending = True
                 try:
-                    accepted = add_plugin_once_job(self.__class__.__name__, 'redo-record', self.scan, '单条重新提取', delay_seconds=1, func_kwargs={'redo': True, 'record': dict(row)})
+                    accepted = add_plugin_once_job(self.__class__.__name__, 'redo-record', self.scan, '单条原盘提取', delay_seconds=1, func_kwargs={'redo': action == 'redo', 'record': dict(row)})
                     if not accepted:
                         raise RuntimeError('宿主调度器未就绪')
                 except Exception as exc:
                     self._pending = False
                     self._status = f'排队失败：{exc}'
                     return {'success': False, 'data': None, 'message': self._status}
-                self._status = f'已排队，仅重新提取：{source}'
+                self._status = f'已排队，仅处理所选原盘：{source}'
             else:
                 history = self.get_data('history') or []
                 self.save_data('history', [] if action == 'clear_all' else [row for row in history if self._row_id(row) != record_id])
+                discovered = self.get_data('discovered') or []
+                self.save_data('discovered', [] if action == 'clear_all' else [row for row in discovered if self._row_id(row) != record_id])
                 for key, row in self._completed_rows():
                     if action == 'clear_all' or self._row_id(row) == record_id:
                         self.del_data(key)
@@ -171,6 +186,37 @@ class DiscRemux(_PluginBase):
             return {'success': True, 'data': None, 'message': self._status}
         finally:
             self._lock.release()
+
+    def discover_sources(self):
+        """只发现原盘并持久保存候选列表，不安装工具或运行提取。"""
+        with self._lock:
+            try:
+                if self._stopping.is_set():
+                    return
+                cfg = dict(self._config)
+                if not cfg.get('source') or not cfg.get('output'):
+                    raise ValueError('请先配置输入和输出目录')
+                root, output = Path(cfg['source']).expanduser(), Path(cfg['output']).expanduser()
+                if not root.is_absolute() or not output.is_absolute():
+                    raise ValueError('输入输出必须为绝对路径')
+                root, output = root.resolve(), output.resolve()
+                if not root.exists():
+                    raise ValueError('输入路径不存在')
+                validate_output(root, output)
+                rows = []
+                for source in discover(root, cfg.get('iso_kind', 'bluray'), exclude=output):
+                    if self._stopping.is_set():
+                        return
+                    rows.append({'source': str(source), 'kind': disc_kind(source, cfg.get('iso_kind', 'bluray')), 'selector': str(cfg.get('selector') or '').strip(), 'time': datetime.now().isoformat(timespec='seconds'), 'result': '已发现，等待手动提取'})
+                    self._status = f'扫描中，发现 {len(rows)} 个原盘'
+                self.save_data('discovered', rows)
+                self._status = f'扫描完成，发现 {len(rows)} 个原盘；点击刷新列表后可逐条提取'
+                logger.info(self._status)
+            except Exception as exc:
+                self._status = f'原盘扫描失败：{exc}'
+                logger.error(self._status)
+            finally:
+                self._pending = False
 
     def scan(self, redo=False, record=None):
         """串行处理原盘，逐项记载结果并支持停止。"""
@@ -286,4 +332,5 @@ class DiscRemux(_PluginBase):
             self._engine.cancel.set()
         remove_plugin_once_job(self.__class__.__name__, 'scan')
         remove_plugin_once_job(self.__class__.__name__, 'redo-record')
+        remove_plugin_once_job(self.__class__.__name__, 'discover')
         self._pending = False
