@@ -3,12 +3,13 @@
     "name": "原盘无损提取",
     "description": "使用 FFmpeg 将蓝光/DVD 目录及 ISO 无损封装为 MKV。",
     "labels": "媒体处理",
-    "version": "1.0.2",
+    "version": "1.1.0",
     "icon": "DVD.png",
     "author": "DiscRemux Contributors",
     "level": 1,
     "system_version": ">=3.0.0",
     "history": {
+      "v1.1.0": "优先使用系统版 FFmpeg；可在界面开启缺失时自动安装，支持容器重建后按需补装。",
       "v1.0.1": "允许输出到扫描目录的子目录，自动排除输出子树，修复 REMUX 子目录配置报错。",
       "v1.0.0": "蓝光/DVD 目录及 ISO 无损封装；周期扫描、标题选择、完整性检查、安全停止。",
       "v1.0.2": "增强失败诊断：记录工具、退出码、信号、命令及日志首尾；保留播放列表选择信息。"

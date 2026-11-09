@@ -8,6 +8,7 @@ from app.sdk.logging import logger
 from app.sdk.scheduler import add_plugin_once_job, remove_plugin_once_job
 
 from .engine import RemuxEngine, discover, disc_kind, validate_output
+from .runtime import select_tools
 
 
 class DiscRemux(_PluginBase):
@@ -15,7 +16,7 @@ class DiscRemux(_PluginBase):
     plugin_name = '原盘无损提取'
     plugin_desc = '使用 FFmpeg 将蓝光/DVD 目录及 ISO 无损封装为 MKV。'
     plugin_icon = 'DVD.png'
-    plugin_version = '1.0.2'
+    plugin_version = '1.1.0'
     plugin_author = 'DiscRemux Contributors'
     author_url = ''
     plugin_config_prefix = 'discremux_'
@@ -69,10 +70,13 @@ class DiscRemux(_PluginBase):
 
     def get_form(self):
         """提供原生配置界面与默认值。"""
-        defaults = dict(enabled=False, run_once=False, source='', output='', iso_kind='bluray', selector='', interval=60, ffmpeg='ffmpeg', ffprobe='ffprobe', timeout=12)
+        defaults = dict(enabled=False, run_once=False, source='', output='', iso_kind='bluray', selector='', interval=60, ffmpeg='ffmpeg', ffprobe='ffprobe', timeout=12, prefer_system=True, auto_install=False)
         fields = []
         for key, label in [('enabled', '启用周期扫描'), ('run_once', '保存后立即运行一次')]:
             fields.append({'component': 'VSwitch', 'props': {'model': key, 'label': label}})
+        for key, label in [('prefer_system', '优先使用系统版 FFmpeg（/usr/bin，忽略下方自定义路径）'), ('auto_install', '缺失时自动安装系统版 FFmpeg（Debian/Ubuntu、root、需联网）')]:
+            fields.append({'component': 'VSwitch', 'props': {'model': key, 'label': label}})
+        fields.append({'component': 'VAlert', 'props': {'type': 'info', 'text': '自动安装仅在优先系统版开启且工具缺失时执行 apt update/install。容器重建后会在下次扫描自动补装；已有系统工具不会重复安装。安装需要可写的系统目录，可能持续数分钟。'}})
         for key, label in [('source', '原盘文件或扫描目录（容器内绝对路径）'), ('output', 'MKV 输出目录（可为扫描目录下的 REMUX，扫描时自动排除）'), ('selector', '蓝光播放列表号/DVD标题号（留空：蓝光主标题、DVD标题1）'), ('interval', '扫描间隔（分钟）'), ('ffmpeg', 'FFmpeg 程序路径'), ('ffprobe', 'FFprobe 程序路径'), ('timeout', '每个子进程最长运行小时数')]:
             fields.append({'component': 'VTextField', 'props': {'model': key, 'label': label}})
         fields.append({'component': 'VSelect', 'props': {'model': 'iso_kind', 'label': 'ISO 类型', 'items': [{'title': '蓝光 / UHD Blu-ray', 'value': 'bluray'}, {'title': 'DVD', 'value': 'dvd'}]}})
@@ -104,7 +108,8 @@ class DiscRemux(_PluginBase):
             if not root.exists():
                 raise ValueError('输入路径不存在')
             validate_output(root, output)
-            engine = RemuxEngine(cfg['ffmpeg'], cfg['ffprobe'], max(1, float(cfg['timeout'])) * 3600)
+            ffmpeg, ffprobe = select_tools(cfg, self._stopping, self._report_runtime)
+            engine = RemuxEngine(ffmpeg, ffprobe, max(1, float(cfg['timeout'])) * 3600)
             self._engine = engine
             if self._stopping.is_set():
                 engine.cancel.set()
@@ -142,6 +147,11 @@ class DiscRemux(_PluginBase):
         finally:
             self._engine = None
             self._lock.release()
+
+    def _report_runtime(self, message):
+        """在详情和宿主日志中显示依赖准备状态。"""
+        self._status = message
+        logger.info(message)
 
     def stop_service(self):
         """取消待执行任务并通知正在运行的子进程退出。"""
