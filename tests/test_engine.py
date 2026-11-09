@@ -129,7 +129,7 @@ class EngineTests(unittest.TestCase):
 
     def test_metadata(self):
         manifest = json.loads((Path(__file__).resolve().parents[1] / 'package.v3.json').read_text(encoding='utf-8'))
-        self.assertEqual(manifest['DiscRemux']['version'], '1.3.1')
+        self.assertEqual(manifest['DiscRemux']['version'], '1.3.2')
 
     def test_playlist_log_detection(self):
         self.runner.ffprobe = sys.executable
@@ -140,7 +140,7 @@ class EngineTests(unittest.TestCase):
         actual = json.loads(json.dumps(self.media))
         self.media['streams'][1]['id'] = '0x1100'
         actual['streams'][1]['tags'] = {'language': 'eng'}
-        with patch.object(self.runner, 'probe', side_effect=[self.media, actual]), patch.object(self.runner, 'run', return_value='{"4352": "eng"}') as run:
+        with patch.object(self.runner, 'probe', side_effect=[self.media, actual]), patch.object(self.runner, 'run', return_value='{"languages": {"4352": "eng"}, "chapters": []}') as run:
             self.runner.remux(self.root, self.root / 'film.mkv', 'bluray', '801')
             command = run.call_args.args[0]
             self.assertIn('-metadata:s:1', command)

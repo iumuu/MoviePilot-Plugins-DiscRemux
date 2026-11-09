@@ -14,7 +14,7 @@ import threading
 import time
 from collections import Counter
 from pathlib import Path
-from .languages import language_args
+from .languages import language_args, chapter_metadata
 
 
 def format_progress(data, duration, elapsed):
@@ -206,6 +206,7 @@ class RemuxEngine:
         if not any(s['codec_type'] == 'video' for s in streams):
             raise RuntimeError('未找到视频轨道')
         languages = {}
+        chapters = []
         if kind == 'bluray':
             playlist = int(selector) if selector else self.selected_playlist
             if playlist is not None:
@@ -213,8 +214,11 @@ class RemuxEngine:
                 try:
                     self.stage = '读取蓝光轨道语言'
                     raw = self.run([sys.executable, str(Path(__file__).with_name('languages.py')), str(source), str(playlist)])
-                    languages = {int(pid): lang for pid, lang in json.loads(raw).items()}
+                    disc_metadata = json.loads(raw)
+                    languages = {int(pid): lang for pid, lang in disc_metadata['languages'].items()}
+                    chapters = disc_metadata['chapters']
                     self.report(f'播放列表 {playlist:05d}：读取到 {len(languages)} 条 PID 语言标签')
+                    self.report(f'播放列表 {playlist:05d}：读取到 {len(chapters)} 个章节')
                 except Exception as exc:
                     if self.cancel.is_set():
                         raise
@@ -239,8 +243,15 @@ class RemuxEngine:
             with tempfile.TemporaryDirectory(prefix='discremux-') as progress_dir:
                 self.progress_file = Path(progress_dir) / 'progress.txt'
                 self.progress_file.touch()
+                chapter_inputs = []
+                chapter_source = '0'
+                if chapters:
+                    chapter_file = Path(progress_dir) / 'chapters.ffmeta'
+                    chapter_file.write_text(chapter_metadata(chapters), encoding='utf-8')
+                    chapter_inputs = ['-f', 'ffmetadata', '-i', str(chapter_file)]
+                    chapter_source = '1'
                 try:
-                    self.run([self.ffmpeg, '-hide_banner', '-loglevel', 'info', '-nostats', '-progress', str(self.progress_file), '-stats_period', '1', '-nostdin', '-y', *args, *maps, '-map_metadata', '0', '-map_chapters', '0', *metadata, '-c', 'copy', '-max_muxing_queue_size', '4096', '-f', 'matroska', str(temp)])
+                    self.run([self.ffmpeg, '-hide_banner', '-loglevel', 'info', '-nostats', '-progress', str(self.progress_file), '-stats_period', '1', '-nostdin', '-y', *args, *chapter_inputs, *maps, '-map_metadata', '0', '-map_chapters', chapter_source, *metadata, '-c', 'copy', '-max_muxing_queue_size', '4096', '-f', 'matroska', str(temp)])
                 finally:
                     self.progress_file = None
             self.stage = '校验输出（尚未完成）'
@@ -257,8 +268,13 @@ class RemuxEngine:
             output_duration = float(actual.get('format', {}).get('duration', 0))
             if duration > 0 and abs(duration - output_duration) > max(3, duration * 0.001):
                 raise RuntimeError('输出时长与原盘不一致')
-            if len(original.get('chapters', [])) != len(actual.get('chapters', [])):
+            expected_chapters = chapters or original.get('chapters', [])
+            if len(expected_chapters) != len(actual.get('chapters', [])):
                 raise RuntimeError('输出章节数量与原盘不一致')
+            if chapters:
+                for expected, output in zip(chapters, actual['chapters']):
+                    if abs(expected['start'] / 45000 - float(output['start_time'])) > 0.01 or abs(expected['end'] / 45000 - float(output['end_time'])) > 0.01:
+                        raise RuntimeError('输出章节时间与播放列表不一致')
             if self.cancel.is_set():
                 raise RuntimeError('任务已停止')
             # 同目录硬链接原子创建最终名称；已存在时失败，永不覆盖。

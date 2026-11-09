@@ -63,6 +63,63 @@ def parse_mpls(data):
     return {pid: next(iter(values)) for pid, values in languages.items() if len(values) == 1}
 
 
+def parse_chapters(data):
+    """将 MPLS 入口标记转换为连续播放时间轴上的真实章节。"""
+    def integer(pos, size):
+        """读取有边界检查的大端字段。"""
+        if pos < 0 or pos + size > len(data):
+            raise ValueError('MPLS 章节数据截断')
+        return int.from_bytes(data[pos:pos + size], 'big')
+    if data[:4] != b'MPLS':
+        raise ValueError('不是 MPLS')
+    playlist, marks = integer(8, 4), integer(12, 4)
+    if not marks:
+        return []
+    count = integer(playlist + 6, 2)
+    pos, total, items = playlist + 10, 0, []
+    for _ in range(count):
+        length = integer(pos, 2)
+        start = pos + 2
+        if length < 20 or start + length > len(data):
+            raise ValueError('MPLS 播放片段长度无效')
+        begin, end = integer(start + 12, 4), integer(start + 16, 4)
+        if end < begin:
+            raise ValueError('MPLS 片段时长无效')
+        items.append((total, begin, end))
+        total += end - begin
+        pos = start + length
+    mark_end = marks + 4 + integer(marks, 4)
+    count = integer(marks + 4, 2)
+    if mark_end > len(data) or marks + 6 + count * 14 > mark_end:
+        raise ValueError('MPLS 章节标记越界')
+    starts = set()
+    for index in range(count):
+        pos = marks + 6 + index * 14
+        if integer(pos + 1, 1) != 1:
+            continue
+        ref, timestamp = integer(pos + 2, 2), integer(pos + 4, 4)
+        if ref >= len(items):
+            raise ValueError('MPLS 章节引用无效')
+        offset, begin, end = items[ref]
+        if not begin <= timestamp <= end:
+            raise ValueError('MPLS 章节时间超出片段')
+        value = offset + timestamp - begin
+        if value < total:
+            starts.add(value)
+    starts = sorted(starts)
+    return [{'start': value, 'end': starts[i + 1] if i + 1 < len(starts) else total}
+            for i, value in enumerate(starts)]
+
+
+def chapter_metadata(chapters):
+    """生成 FFmetadata 章节输入，使用蓝光原生 45kHz 时间基。"""
+    lines = [';FFMETADATA1']
+    for index, chapter in enumerate(chapters, 1):
+        lines.extend(['[CHAPTER]', 'TIMEBASE=1/45000', f"START={chapter['start']}",
+                      f"END={chapter['end']}", f'title=Chapter {index:02d}'])
+    return chr(10).join(lines) + chr(10)
+
+
 def read_playlist(source, playlist):
     """目录直接读取，ISO 使用系统 libbluray 的虚拟文件系统读取。"""
     relative = f'BDMV/PLAYLIST/{int(playlist):05d}.mpls'
@@ -118,4 +175,5 @@ def language_args(streams, languages):
 
 
 if __name__ == '__main__':
-    print(json.dumps(parse_mpls(read_playlist(sys.argv[1], int(sys.argv[2])))))
+    data = read_playlist(sys.argv[1], int(sys.argv[2]))
+    print(json.dumps({'languages': parse_mpls(data), 'chapters': parse_chapters(data)}))
