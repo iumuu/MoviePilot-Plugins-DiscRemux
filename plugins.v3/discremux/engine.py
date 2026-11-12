@@ -99,7 +99,7 @@ def input_args(source: Path, kind: str, selector: str = '') -> list[str]:
     if selector and (not selector.isdecimal() or int(selector) < 0):
         raise ValueError('播放列表/标题必须为非负整数')
     if kind == 'bluray':
-        return (['-playlist', str(int(selector))] if selector else []) + ['-i', 'bluray:' + str(source)]
+        return ['-fflags', '+genpts'] + (['-playlist', str(int(selector))] if selector else []) + ['-i', 'bluray:' + str(source)]
     if kind == 'dvd':
         if selector and int(selector) < 1:
             raise ValueError('DVD 标题必须从 1 开始')

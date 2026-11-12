@@ -56,7 +56,7 @@ class EngineTests(unittest.TestCase):
 
     def test_bluray_navigation(self):
         args = engine.input_args(self.root, 'bluray', '00800')
-        self.assertEqual(args, ['-playlist', '800', '-i', 'bluray:' + str(self.root)])
+        self.assertEqual(args, ['-fflags', '+genpts', '-playlist', '800', '-i', 'bluray:' + str(self.root)])
 
     def test_dvd_navigation(self):
         self.assertEqual(engine.input_args(self.root, 'dvd', '2')[:4], ['-f', 'dvdvideo', '-title', '2'])
@@ -74,6 +74,9 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(self.runner.remux(self.root, target, 'bluray'), '完成')
             cmd = run.call_args.args[0]
             self.assertIn('copy', cmd)
+            self.assertEqual(cmd[cmd.index('-fflags') + 1], '+genpts')
+            self.assertLess(cmd.index('-fflags'), cmd.index('-i'))
+            self.assertNotIn('discardcorrupt', ' '.join(cmd))
             self.assertEqual(cmd.count('-map'), 3)
             self.assertIn('-map_chapters', cmd)
         self.assertTrue(target.exists())
@@ -129,7 +132,7 @@ class EngineTests(unittest.TestCase):
 
     def test_metadata(self):
         manifest = json.loads((Path(__file__).resolve().parents[1] / 'package.v3.json').read_text(encoding='utf-8'))
-        self.assertEqual(manifest['DiscRemux']['version'], '1.5.0')
+        self.assertEqual(manifest['DiscRemux']['version'], '1.5.1')
 
     def test_playlist_log_detection(self):
         self.runner.ffprobe = sys.executable
